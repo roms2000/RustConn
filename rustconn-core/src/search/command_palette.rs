@@ -187,6 +187,12 @@ pub fn builtin_commands() -> Vec<PaletteItem> {
         .with_description("Ctrl+Shift+S")
         .with_priority(30),
         PaletteItem::new(
+            "Network Scan",
+            CommandPaletteAction::GtkAction("win.network-scan".into()),
+        )
+        .with_icon("network-workgroup-symbolic")
+        .with_priority(20),
+        PaletteItem::new(
             "Remove Split",
             CommandPaletteAction::GtkAction("win.unsplit".into()),
         )
