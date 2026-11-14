@@ -15947,3 +15947,7 @@ msgstr "Análise da rede…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Prima R para voltar a ligar, Q para fechar"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Desmarque para excluir este painel da difusão das teclas"

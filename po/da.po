@@ -15839,3 +15839,7 @@ msgstr "Netværksscanning…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Tryk på R for at genoprette forbindelsen, Q for at lukke"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Fjern markeringen for at holde dette panel ude af tastaturudsendelsen"

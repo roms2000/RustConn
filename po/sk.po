@@ -15873,3 +15873,7 @@ msgstr "Prehľadanie siete…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Stlačte R na opätovné pripojenie, Q na zatvorenie"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Zrušte začiarknutie, aby tento panel nedostával vysielané stlačenia klávesov"

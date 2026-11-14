@@ -15780,3 +15780,7 @@ msgstr "Quét mạng…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Nhấn R để kết nối lại, Q để đóng"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Bỏ chọn để loại ô này khỏi việc phát phím"

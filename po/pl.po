@@ -15902,3 +15902,7 @@ msgstr "Skanowanie sieci…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Naciśnij R, aby połączyć ponownie, Q, aby zamknąć"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Odznacz, aby wyłączyć ten panel z rozsyłania naciśnięć klawiszy"

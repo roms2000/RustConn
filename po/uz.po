@@ -15945,3 +15945,7 @@ msgstr "Tarmoqni skanerlash…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Qayta ulanish uchun R, yopish uchun Q tugmasini bosing"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Bu panelni klavishlar uzatishidan chiqarish uchun belgini olib tashlang"

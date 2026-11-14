@@ -15399,3 +15399,7 @@ msgstr "网络扫描…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "按 R 重新连接，按 Q 关闭"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "取消勾选可将此窗格排除在按键广播之外"

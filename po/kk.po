@@ -15848,3 +15848,7 @@ msgstr "Желіні сканерлеу…"
 #: rustconn/src/terminal/session_lifecycle.rs:411
 msgid "Press R to reconnect, Q to close"
 msgstr "Қайта қосылу үшін R, жабу үшін Q пернесін басыңыз"
+
+#: rustconn/src/split_view/adapter.rs:952
+msgid "Untick to keep this panel out of the keystroke broadcast"
+msgstr "Бұл панельді пернелер таратуынан шығару үшін белгіні алып тастаңыз"
