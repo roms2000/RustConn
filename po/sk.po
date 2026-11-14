@@ -15868,3 +15868,8 @@ msgstr "Odstrániť rozdelenie (Ctrl+Shift+J)"
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr "Prehľadanie siete…"
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr "Stlačte R na opätovné pripojenie, Q na zatvorenie"

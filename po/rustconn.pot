@@ -15040,3 +15040,8 @@ msgstr ""
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr ""
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr ""

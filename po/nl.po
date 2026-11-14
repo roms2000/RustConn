@@ -15984,3 +15984,8 @@ msgstr "Splitsing verwijderen (Ctrl+Shift+J)"
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr "Netwerkscan…"
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr "Druk op R om opnieuw te verbinden, Q om te sluiten"

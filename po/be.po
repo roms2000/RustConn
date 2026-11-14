@@ -15854,3 +15854,8 @@ msgstr "Выдаліць падзел (Ctrl+Shift+J)"
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr "Сканаванне сеткі…"
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr "Націсніце R, каб злучыцца зноў, Q, каб закрыць"

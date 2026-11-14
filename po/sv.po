@@ -15849,3 +15849,8 @@ msgstr "Ta bort delning (Ctrl+Skift+J)"
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr "Nätverksskanning…"
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr "Tryck på R för att återansluta, Q för att stänga"

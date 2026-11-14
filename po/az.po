@@ -15816,3 +15816,8 @@ msgstr "Bölməni sil (Ctrl+Shift+J)"
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr "Şəbəkə skanı…"
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr "Yenidən qoşulmaq üçün R, bağlamaq üçün Q düyməsini basın"

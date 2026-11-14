@@ -15394,3 +15394,8 @@ msgstr "移除拆分 (Ctrl+Shift+J)"
 #: rustconn/src/window/ui.rs:306
 msgid "Network Scan…"
 msgstr "网络扫描…"
+
+#: rustconn/src/terminal/session_lifecycle.rs:405
+#: rustconn/src/terminal/session_lifecycle.rs:411
+msgid "Press R to reconnect, Q to close"
+msgstr "按 R 重新连接，按 Q 关闭"
