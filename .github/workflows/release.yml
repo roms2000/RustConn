@@ -13,9 +13,6 @@ env:
   # the CI `hygiene` job fails the build if any of the three drift apart. Without
   # this, a job asking for `stable` installs stable and then has the toolchain
   # file pull a second toolchain on the first cargo call.
-  #
-  # The `build-rpm` job deliberately opts out via RUSTUP_TOOLCHAIN=1.95.0: its
-  # RPM is built on MSRV.
   RUST_TOOLCHAIN: '1.99.0'
 
 # Least privilege by default; jobs that need more (e.g. creating the GitHub
@@ -69,7 +66,7 @@ jobs:
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           PKG_DIR="rustconn_${VERSION}_amd64"
-          
+
           mkdir -p "${PKG_DIR}/DEBIAN"
           mkdir -p "${PKG_DIR}/usr/bin"
           mkdir -p "${PKG_DIR}/usr/share/applications"
@@ -78,15 +75,15 @@ jobs:
           mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/256x256/apps"
           mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/128x128/apps"
           mkdir -p "${PKG_DIR}/usr/share/doc/rustconn"
-          
+
           # Binaries
           cp target/release/rustconn "${PKG_DIR}/usr/bin/"
           cp target/release/rustconn-cli "${PKG_DIR}/usr/bin/"
-          
+
           # Desktop file and metadata
           msgfmt --desktop --template rustconn/assets/io.github.totoshko88.RustConn.desktop -d po -o "${PKG_DIR}/usr/share/applications/io.github.totoshko88.RustConn.desktop"
           cp rustconn/assets/io.github.totoshko88.RustConn.metainfo.xml "${PKG_DIR}/usr/share/metainfo/"
-          
+
           # Icons
           cp rustconn/assets/icons/hicolor/scalable/apps/io.github.totoshko88.RustConn.svg \
              "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/" || true
@@ -94,11 +91,11 @@ jobs:
             cp "rustconn/assets/icons/hicolor/${size}x${size}/apps/io.github.totoshko88.RustConn.png" \
                "${PKG_DIR}/usr/share/icons/hicolor/${size}x${size}/apps/" 2>/dev/null || true
           done
-          
+
           # Docs and copyright
           cp README.md LICENSE NOTICE TRADEMARKS.md CHANGELOG.md "${PKG_DIR}/usr/share/doc/rustconn/"
           cp debian/copyright "${PKG_DIR}/usr/share/doc/rustconn/copyright"
-          
+
           # Locale files (compile .po to .mo)
           for po_file in po/*.po; do
             [ -f "$po_file" ] || continue
@@ -106,7 +103,7 @@ jobs:
             mkdir -p "${PKG_DIR}/usr/share/locale/${lang}/LC_MESSAGES"
             msgfmt -o "${PKG_DIR}/usr/share/locale/${lang}/LC_MESSAGES/rustconn.mo" "$po_file"
           done
-          
+
           # Derive the library dependencies from the binaries instead of listing
           # them by hand (issue #313, reported by @philclifford).
           #
@@ -164,7 +161,7 @@ jobs:
            remote connections with support for embedded terminals, connection groups,
            import/export, and secure credential storage.
           EOF
-          
+
           # Build deb
           dpkg-deb --build "${PKG_DIR}"
           mkdir -p dist
@@ -202,20 +199,11 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Rename Flatpak with version
-        run: mv dist/RustConn.flatpak "dist/RustConn-${{ steps.version.outputs.VERSION }}.flatpak"
-
-      # Signed SLSA build provenance for every file that ends up on the release.
-      # Placed after the Flatpak rename on purpose: the attestation binds to a
-      # file's digest AND name, so attesting before the rename would leave the
-      # published artifact unverifiable.
+      # Signed SLSA build provenance for the single file that ends up on the
+      # release (the .deb).
       #
       # Verify a download with:
-      #   gh attestation verify RustConn-<ver>.AppImage --repo totoshko88/RustConn
-      #
-      # Covers deb, rpm, AppImage and Flatpak. The snap is NOT covered here — it
-      # is built in a separate post-release job and the Snap Store does its own
-      # signing, so adding it would mean a second attestation step in that job.
+      #   gh attestation verify rustconn_<ver>_amd64.deb --repo totoshko88/RustConn
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -236,12 +224,12 @@ jobs:
             found && !/^$/ { print }
             found && /^$/ { print }
           ' CHANGELOG.md > version_changelog.md
-          
+
           # Debug: show what was extracted
           echo "=== Extracted changelog for ${VERSION} ==="
           cat version_changelog.md
           echo "=== End changelog ==="
-          
+
           # If no changelog found, use default message
           if [ ! -s version_changelog.md ]; then
             echo "Release ${VERSION}" > version_changelog.md
@@ -253,13 +241,13 @@ jobs:
           VERSION=${{ steps.version.outputs.VERSION }}
           cat << 'HEADER' > release_notes.md
           ## What's Changed
-          
+
           HEADER
-          
+
           cat version_changelog.md >> release_notes.md
-          
+
           cat << EOF >> release_notes.md
-          
+
           ## Installation
 
           ### Debian/Ubuntu (.deb from this release)
@@ -268,11 +256,37 @@ jobs:
           sudo apt-get install -f  # Install dependencies if needed
           \`\`\`
 
+          ### OBS Repositories (Debian/Ubuntu, .deb)
+          Packages available at: https://build.opensuse.org/package/show/home:totoshko88:rustconn/rustconn
+
+          \`\`\`bash
+          # Debian 13 (Trixie)
+          echo 'deb http://download.opensuse.org/repositories/home:/totoshko88:/rustconn/Debian_13/ /' \\
+            | sudo tee /etc/apt/sources.list.d/rustconn.list
+          curl -fsSL https://download.opensuse.org/repositories/home:/totoshko88:/rustconn/Debian_13/Release.key \\
+            | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/rustconn.gpg > /dev/null
+          sudo apt update && sudo apt install rustconn
+
+          # Ubuntu 24.04 LTS (Noble)
+          echo 'deb http://download.opensuse.org/repositories/home:/totoshko88:/rustconn/xUbuntu_24.04/ /' \\
+            | sudo tee /etc/apt/sources.list.d/rustconn.list
+          curl -fsSL https://download.opensuse.org/repositories/home:/totoshko88:/rustconn/xUbuntu_24.04/Release.key \\
+            | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/rustconn.gpg > /dev/null
+          sudo apt update && sudo apt install rustconn
+
+          # Ubuntu 26.04 LTS (Resolute)
+          echo 'deb http://download.opensuse.org/repositories/home:/totoshko88:/rustconn/xUbuntu_26.04/ /' \\
+            | sudo tee /etc/apt/sources.list.d/rustconn.list
+          curl -fsSL https://download.opensuse.org/repositories/home:/totoshko88:/rustconn/xUbuntu_26.04/Release.key \\
+            | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/rustconn.gpg > /dev/null
+          sudo apt update && sudo apt install rustconn
+          \`\`\`
+
           Full installation guide: https://github.com/totoshko88/RustConn/blob/main/docs/INSTALL.md
 
           ## Verifying your download
 
-          Every binary on this release (deb, rpm, AppImage, Flatpak) is covered two ways.
+          Every binary on this release is a .deb, covered two ways.
 
           Plain checksums — download \`SHA256SUMS\` alongside the asset, then:
           \`\`\`bash
@@ -282,9 +296,8 @@ jobs:
           Signed build provenance (SLSA, via Sigstore) — proves the file was built by this
           workflow from this commit:
           \`\`\`bash
-          gh attestation verify RustConn-${VERSION}-x86_64.AppImage --repo totoshko88/RustConn
+          gh attestation verify rustconn-${VERSION}_amd64.deb --repo totoshko88/RustConn
           \`\`\`
-          (The snap is signed by the Snap Store; the macOS build is delivered via the Homebrew tap.)
           EOF
 
       - name: List artifacts
@@ -294,15 +307,12 @@ jobs:
       # attestation above (actions/attest-build-provenance) is the stronger trust
       # signal — this is a convenience layer so a user can run
       #   sha256sum -c SHA256SUMS
-      # against the downloaded files without `gh attestation verify` or Sigstore.
+      # against the downloaded .deb without `gh attestation verify` or Sigstore.
       #
-      # Generated AFTER the attestation step on purpose: the files already carry
-      # their final published names here (the Flatpak rename happened), and the
-      # manifest excludes itself so the hash covers only the real artifacts, not
-      # a checksum file hashing a checksum file. Scope matches the attestation:
-      # deb, rpm, AppImage and Flatpak (the files in dist/). The snap is signed
-      # by the Snap Store and the macOS build ships via the Homebrew tap, so
-      # neither is a GitHub-Release asset and neither is covered here.
+      # Generated AFTER the attestation step on purpose: the .deb already carries
+      # its final published name here, and the manifest excludes itself so the
+      # hash covers only the real artifact, not a checksum file hashing a
+      # checksum file.
       - name: Generate SHA256SUMS
         working-directory: dist
         run: |
@@ -324,5 +334,122 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  update-obs:
+    name: Update OBS Package
+    needs: [release]
+    runs-on: ubuntu-26.04
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd osc
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Publish to OBS
+        env:
+          OBS_USERNAME: ${{ secrets.OBS_USERNAME }}
+          OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
+        run: ./scripts/obs-publish.sh "${{ steps.version.outputs.VERSION }}"
+
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: [release]
+    runs-on: ubuntu-26.04
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout RustConn
+        uses: actions/checkout@v7
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download source tarball and compute SHA256
+        id: sha
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          URL="https://github.com/totoshko88/RustConn/archive/refs/tags/v${VERSION}.tar.gz"
+          # Retry: the tag tarball may not be replicated to all CDN nodes
+          # in the first seconds after the release is created
+          curl --retry 5 --retry-delay 10 --retry-all-errors -sL "$URL" -o source.tar.gz
+          tar -tzf source.tar.gz > /dev/null || { echo "::error::Downloaded tarball is corrupt"; exit 1; }
+          SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "SHA256=${SHA256}" >> $GITHUB_OUTPUT
+          echo "Source tarball SHA256: ${SHA256}"
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: totoshko88/homebrew-rustconn
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          SHA256=${{ steps.sha.outputs.SHA256 }}
+          FORMULA="homebrew-tap/Formula/rustconn.rb"
+
+          # Copy the canonical formula from the release source tree.
+          # This ensures feature flags, dependencies, and install logic stay in
+          # sync with the code — the CI only needs to patch version + sha256.
+          cp packaging/macos/rustconn.rb "$FORMULA"
+
+          # Replace the archive URL version (anchored to active `url` line)
+          sed -i 's|^\(  url "https://github.com/totoshko88/RustConn/archive/refs/tags/v\)[^"]*\(\.tar\.gz"\)|\1'"${VERSION}"'\2|' "$FORMULA"
+
+          # Replace sha256 (handles both PLACEHOLDER_SHA256 and any previous real hash)
+          sed -i 's|^\(  sha256 "\)[^"]*("\(.*\)|\1'"${SHA256}"'\2|' "$FORMULA"
+
+          # ── Verification: fail unless exactly one active URL contains the
+          # release tag and exactly one active sha256 contains the computed hash.
+          # Escape the dots in the version so 0.19.11 cannot match 0X19Y11
+          VERSION_RE=${VERSION//./\\.}
+          URL_COUNT=$(grep -c "^  url.*v${VERSION_RE}\.tar\.gz" "$FORMULA" || true)
+          SHA_COUNT=$(grep -c "^  sha256 \"${SHA256}\"" "$FORMULA" || true)
+
+          if [[ "$URL_COUNT" -ne 1 ]]; then
+            echo "::error::Expected exactly 1 active URL with v${VERSION}, found ${URL_COUNT}"
+            head -15 "$FORMULA"
+            exit 1
+          fi
+          if [[ "$SHA_COUNT" -ne 1 ]]; then
+            echo "::error::Expected exactly 1 active sha256 with computed hash, found ${SHA_COUNT}"
+            head -15 "$FORMULA"
+            exit 1
+          fi
+
+          echo "=== Updated formula (first 10 lines) ==="
+          head -10 "$FORMULA"
+
+      - name: Commit and push
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/rustconn.rb
+          # Idempotent: a re-run for the same version produces identical content,
+          # so skip the commit/push when nothing changed (avoids a failed
+          # "nothing to commit" exit on retry).
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for ${VERSION} — nothing to commit"
+          else
+            git commit -m "rustconn ${VERSION}
+
+          Automated update from RustConn release v${VERSION}
+          https://github.com/totoshko88/RustConn/releases/tag/v${VERSION}"
             git push
           fi
