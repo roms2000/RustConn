@@ -37,7 +37,9 @@ pub use detection::{
     detect_waypipe, freerdp_launch_order, is_wayland_session, resolve_freerdp_client,
     resolve_vnc_viewer,
 };
-pub use exit_cause::{STARTUP_FAILURE_WINDOW_SECS, ssh_exit_is_auth_failure};
+pub use exit_cause::{
+    STARTUP_FAILURE_WINDOW_SECS, ssh_exit_is_auth_failure, winrm_exit_is_auth_failure,
+};
 pub use freerdp::{
     FreeRdpConfig, FreeRdpSizing, build_freerdp_args, contains_freerdp_secret_field,
     extract_geometry_from_args, filter_extra_args, freerdp_kerberos_arg,
@@ -65,7 +67,7 @@ pub use sftp::SftpProtocol;
 pub use spice::SpiceProtocol;
 pub use ssh::SshProtocol;
 pub use telnet::TelnetProtocol;
-pub use vnc::VncProtocol;
+pub use vnc::{VncPasswordFile, VncProtocol, encode_vnc_password_file, viewer_reads_password_file};
 pub use web::{
     BrowserFamily, BrowserProfile, SocksPasswordVariableError, WebProtocol, browser_family,
     can_use_socks_proxy, chromium_proxy_browsers, first_installed_proxy_browser,

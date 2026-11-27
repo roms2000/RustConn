@@ -107,14 +107,10 @@ impl KeePassTarget {
         connection: &rustconn_core::models::Connection,
         groups: &[rustconn_core::models::ConnectionGroup],
     ) -> Self {
-        let base = rustconn_core::secret::KeePassHierarchy::build_entry_path(connection, groups);
-        let entry_key = format!(
-            "{} ({})",
-            base.strip_prefix("RustConn/").unwrap_or(&base),
-            connection.protocol.as_str().to_lowercase()
-        );
         Self {
-            entry_key,
+            entry_key: rustconn_core::secret::KeePassHierarchy::build_entry_name(
+                connection, groups,
+            ),
             database_override: rustconn_core::secret::resolve_kdbx_path_override(
                 connection, groups,
             ),
@@ -157,10 +153,13 @@ fn vault_keys(
     );
     // Plus what this command alone used to write, on the backends it wrote it
     // to. 1Password and Passbolt are left out: the old command stored those
-    // under the UUID, which the GUI list already ends with.
+    // under the UUID, which the GUI list already ends with. Proton Pass is
+    // newer than that command, so nothing was ever written there either.
     if !matches!(
         backend,
-        SecretBackendType::OnePassword | SecretBackendType::Passbolt
+        SecretBackendType::OnePassword
+            | SecretBackendType::Passbolt
+            | SecretBackendType::ProtonPass
     ) {
         keys.push(format!(
             "{} ({})",
@@ -343,6 +342,27 @@ pub fn cmd_secret(config_path: Option<&Path>, subcmd: SecretCommands) -> Result<
     }
 }
 
+/// Prints one `secret status` line for a CLI: its `--version` output, or "Not
+/// installed" when it cannot be run. `label` carries the column padding.
+#[cfg(feature = "secret-management")]
+fn print_cli_version(label: &str, program: &str, first_line_only: bool) {
+    match std::process::Command::new(program)
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let version = if first_line_only {
+                stdout.lines().next().unwrap_or("")
+            } else {
+                &stdout
+            };
+            println!("{label}Available ✓ (version {})", version.trim());
+        }
+        _ => println!("{label}Not installed"),
+    }
+}
+
 #[cfg(feature = "secret-management")]
 fn cmd_secret_status(config_path: Option<&Path>) -> Result<(), CliError> {
     use rustconn_core::secret::KeePassStatus;
@@ -350,15 +370,21 @@ fn cmd_secret_status(config_path: Option<&Path>) -> Result<(), CliError> {
     println!("Secret Backend Status");
     println!("=====================\n");
 
-    let libsecret_available = rustconn_core::which::is_available("secret-tool");
-    println!(
-        "Keyring (libsecret):  {}",
-        if libsecret_available {
-            "Available ✓"
-        } else {
-            "Not available (secret-tool not found)"
-        }
-    );
+    // On macOS the keyring backend is the system Keychain (Security.framework),
+    // which is always present; `secret-tool` is the Linux libsecret client.
+    if cfg!(target_os = "macos") {
+        println!("Keyring (Keychain):   Available ✓");
+    } else {
+        let libsecret_available = rustconn_core::which::is_available("secret-tool");
+        println!(
+            "Keyring (libsecret):  {}",
+            if libsecret_available {
+                "Available ✓"
+            } else {
+                "Not available (secret-tool not found)"
+            }
+        );
+    }
 
     let keepass_status = KeePassStatus::detect();
     if keepass_status.keepassxc_installed {
@@ -374,67 +400,12 @@ fn cmd_secret_status(config_path: Option<&Path>) -> Result<(), CliError> {
         println!("KeePassXC:            Not installed");
     }
 
-    let bw_output = std::process::Command::new("bw").arg("--version").output();
-    if let Ok(output) = bw_output {
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            println!(
-                "Bitwarden CLI:        Available ✓ (version {})",
-                version.trim()
-            );
-        } else {
-            println!("Bitwarden CLI:        Not installed");
-        }
-    } else {
-        println!("Bitwarden CLI:        Not installed");
-    }
-
-    let op_output = std::process::Command::new("op").arg("--version").output();
-    if let Ok(output) = op_output {
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            println!(
-                "1Password CLI:        Available ✓ (version {})",
-                version.trim()
-            );
-        } else {
-            println!("1Password CLI:        Not installed");
-        }
-    } else {
-        println!("1Password CLI:        Not installed");
-    }
-
-    let pb_output = std::process::Command::new("passbolt")
-        .arg("--version")
-        .output();
-    if let Ok(output) = pb_output {
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            println!(
-                "Passbolt CLI:         Available ✓ (version {})",
-                version.trim()
-            );
-        } else {
-            println!("Passbolt CLI:         Not installed");
-        }
-    } else {
-        println!("Passbolt CLI:         Not installed");
-    }
-
-    let pass_output = std::process::Command::new("pass").arg("--version").output();
-    if let Ok(output) = pass_output {
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            println!(
-                "Pass (passwordstore):  Available ✓ (version {})",
-                version.lines().next().unwrap_or("").trim()
-            );
-        } else {
-            println!("Pass (passwordstore):  Not installed");
-        }
-    } else {
-        println!("Pass (passwordstore):  Not installed");
-    }
+    // `pass --version` prints a banner; its first line carries the version.
+    print_cli_version("Bitwarden CLI:        ", "bw", false);
+    print_cli_version("1Password CLI:        ", "op", false);
+    print_cli_version("Passbolt CLI:         ", "passbolt", false);
+    print_cli_version("Pass (passwordstore):  ", "pass", true);
+    print_cli_version("Proton Pass CLI:      ", "pass-cli", false);
 
     let config_manager = create_config_manager(config_path)?;
 
@@ -468,6 +439,9 @@ fn parse_backend(b: &str) -> Result<rustconn_core::config::SecretBackendType, Cl
         "1password" | "onepassword" | "op" => Ok(SecretBackendType::OnePassword),
         "passbolt" => Ok(SecretBackendType::Passbolt),
         "pass" => Ok(SecretBackendType::Pass),
+        "proton-pass" | "proton_pass" | "protonpass" | "pass-cli" => {
+            Ok(SecretBackendType::ProtonPass)
+        }
         // Both file backends already have handlers in get/set/delete; until now
         // there was simply no spelling that reached them.
         "encrypted-file" | "encrypted_file" | "file" => Ok(SecretBackendType::EncryptedFile),
@@ -476,7 +450,7 @@ fn parse_backend(b: &str) -> Result<rustconn_core::config::SecretBackendType, Cl
         }
         _ => Err(CliError::Secret(format!(
             "Unknown backend: {b}. Use: keyring, keepass, bitwarden, \
-             1password, passbolt, pass, encrypted-file, or portable"
+             1password, passbolt, pass, proton-pass, encrypted-file, or portable"
         ))),
     }
 }
@@ -541,7 +515,13 @@ fn cmd_secret_get(
                     }
                     if creds.expose_password().is_some() {
                         println!("Password:   ********");
-                        println!("\nUse 'secret-tool' to view actual value");
+                        if cfg!(target_os = "macos") {
+                            println!(
+                                "\nUse Keychain Access (service \"rustconn\") to view actual value"
+                            );
+                        } else {
+                            println!("\nUse 'secret-tool' to view actual value");
+                        }
                     } else {
                         println!("Password:   (not set)");
                     }
@@ -749,6 +729,40 @@ fn cmd_secret_get(
                 Err(e) => Err(CliError::Secret(format!("Pass error: {e}"))),
             }
         }
+        SecretBackendType::ProtonPass => {
+            use rustconn_core::secret::ProtonPassBackend;
+
+            let rt = secret_runtime()?;
+
+            // The read-only / root-search toggles from settings; the session
+            // itself is pass-cli's own.
+            let backend = ProtonPassBackend::from_secret_settings(&settings.secrets);
+            let result: Result<Option<Credentials>, _> =
+                rt.block_on(retrieve_connection_credentials(&backend, &keys, connection));
+
+            match result {
+                Ok(Some(creds)) => {
+                    println!("Connection: {}", connection.name);
+                    if let Some(ref user) = creds.username {
+                        println!("Username:   {user}");
+                    }
+                    if creds.expose_password().is_some() {
+                        println!(
+                            "Password:   ******** \
+                             (stored in Proton Pass)"
+                        );
+                    } else {
+                        println!("Password:   (not set)");
+                    }
+                    Ok(())
+                }
+                Ok(None) => Err(CliError::Secret(format!(
+                    "No credentials found in Proton Pass for '{}'",
+                    connection.name
+                ))),
+                Err(e) => Err(CliError::Secret(format!("Proton Pass error: {e}"))),
+            }
+        }
         SecretBackendType::EncryptedFile => {
             use rustconn_core::secret::EncryptedFileBackend;
 
@@ -843,6 +857,7 @@ pub(super) fn store_connection_credentials_in_backend(
 ) -> Result<(), CliError> {
     use rustconn_core::config::SecretBackendType;
     use rustconn_core::secret::KeePassStatus;
+    let user_note = user_note(username_value);
 
     match backend_type {
         SecretBackendType::LibSecret | SecretBackendType::MacOsKeychain => {
@@ -867,8 +882,8 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("Keyring error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in Keyring (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in Keyring{user_note}",
+                connection.name
             );
             Ok(())
         }
@@ -893,12 +908,7 @@ pub(super) fn store_connection_credentials_in_backend(
                 &keepass.entry_key,
                 username_value,
                 &password_value,
-                Some(&format!(
-                    "{}://{}:{}",
-                    connection.protocol.as_str().to_lowercase(),
-                    connection.host,
-                    connection.port
-                )),
+                Some(&entry_url(connection)),
                 settings.secrets.kdbx_yubikey_slot.as_deref(),
                 settings.secrets.kdbx_read_only,
             )
@@ -907,10 +917,9 @@ pub(super) fn store_connection_credentials_in_backend(
             })?;
 
             println!(
-                "Stored credentials for '{}' in KeePass database '{}' (user: {})",
+                "Stored credentials for '{}' in KeePass database '{}'{user_note}",
                 connection.name,
-                kdbx_path.display(),
-                username_value
+                kdbx_path.display()
             );
             Ok(())
         }
@@ -931,8 +940,8 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("Bitwarden error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in Bitwarden (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in Bitwarden{user_note}",
+                connection.name
             );
             Ok(())
         }
@@ -954,8 +963,8 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("1Password error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in 1Password (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in 1Password{user_note}",
+                connection.name
             );
             Ok(())
         }
@@ -977,8 +986,8 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("Passbolt error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in Passbolt (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in Passbolt{user_note}",
+                connection.name
             );
             Ok(())
         }
@@ -999,8 +1008,30 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("Pass error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in Pass (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in Pass{user_note}",
+                connection.name
+            );
+            Ok(())
+        }
+        SecretBackendType::ProtonPass => {
+            use rustconn_core::models::Credentials;
+            use rustconn_core::secret::{ProtonPassBackend, SecretBackend};
+
+            let rt = secret_runtime()?;
+
+            let backend = ProtonPassBackend::from_secret_settings(&settings.secrets);
+            let creds = Credentials {
+                username: Some(username_value.to_string()),
+                password: Some(password_value),
+                domain: connection.domain.clone(),
+            };
+
+            rt.block_on(backend.store(&keys.primary, &creds))
+                .map_err(|e| CliError::Secret(format!("Proton Pass error: {e}")))?;
+
+            println!(
+                "Stored credentials for '{}' in Proton Pass{user_note}",
+                connection.name
             );
             Ok(())
         }
@@ -1021,8 +1052,8 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("Encrypted file error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in encrypted file (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in encrypted file{user_note}",
+                connection.name
             );
             Ok(())
         }
@@ -1043,12 +1074,40 @@ pub(super) fn store_connection_credentials_in_backend(
                 .map_err(|e| CliError::Secret(format!("Portable file error: {e}")))?;
 
             println!(
-                "Stored credentials for '{}' in the portable encrypted file (user: {})",
-                connection.name, username_value
+                "Stored credentials for '{}' in the portable encrypted file{user_note}",
+                connection.name
             );
             Ok(())
         }
     }
+}
+
+/// ` (user: NAME)` for a store message, or nothing when there is no user
+/// name (a VNC or SPICE password has none).
+#[cfg(feature = "secret-management")]
+fn user_note(username: &str) -> String {
+    if username.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" (user: {username})")
+    }
+}
+
+/// The URL written into a KeePass entry: `protocol://host:port`, or a Web
+/// connection's own URL.
+#[cfg(feature = "secret-management")]
+fn entry_url(connection: &rustconn_core::models::Connection) -> String {
+    if matches!(
+        connection.protocol_config,
+        rustconn_core::models::ProtocolConfig::Web(_)
+    ) {
+        return connection.host.clone();
+    }
+    format!(
+        "{}://{}",
+        connection.protocol.as_str().to_lowercase(),
+        crate::util::display_endpoint(connection)
+    )
 }
 
 /// Promotes a connection's `password_source` to `Vault` when it is still `None`.
@@ -1434,6 +1493,21 @@ fn cmd_secret_delete(
             println!("Deleted credentials for '{}' from Pass", connection.name);
             Ok(())
         }
+        SecretBackendType::ProtonPass => {
+            use rustconn_core::secret::ProtonPassBackend;
+
+            let rt = secret_runtime()?;
+
+            let backend = ProtonPassBackend::from_secret_settings(&settings.secrets);
+            rt.block_on(delete_connection_credentials(&backend, &keys))
+                .map_err(|e| CliError::Secret(format!("Proton Pass error: {e}")))?;
+
+            println!(
+                "Deleted credentials for '{}' from Proton Pass",
+                connection.name
+            );
+            Ok(())
+        }
         SecretBackendType::EncryptedFile => {
             use rustconn_core::secret::EncryptedFileBackend;
 
@@ -1688,6 +1762,7 @@ mod vault_key_tests {
             SecretBackendType::OnePassword,
             SecretBackendType::Passbolt,
             SecretBackendType::Pass,
+            SecretBackendType::ProtonPass,
             SecretBackendType::EncryptedFile,
             SecretBackendType::PortableEncryptedFile,
         ] {
@@ -1720,7 +1795,11 @@ mod vault_key_tests {
     #[test]
     fn onepassword_and_passbolt_get_no_name_protocol_key() {
         let (conn, groups) = grouped_rdp();
-        for backend in [SecretBackendType::OnePassword, SecretBackendType::Passbolt] {
+        for backend in [
+            SecretBackendType::OnePassword,
+            SecretBackendType::Passbolt,
+            SecretBackendType::ProtonPass,
+        ] {
             assert_eq!(
                 vault_keys(&conn, &groups, backend).legacy,
                 vec![conn.id.to_string()],
@@ -1825,5 +1904,32 @@ mod keepass_target_tests {
                 .database(&settings_with_global(None))
                 .is_err()
         );
+    }
+}
+
+#[cfg(all(test, feature = "secret-management"))]
+mod store_message_tests {
+    use rustconn_core::models::{Connection, ProtocolConfig, WebConfig};
+
+    /// M2: a VNC or SPICE password has no user, and the message printed
+    /// `(user: )` for it.
+    #[test]
+    fn a_store_message_names_a_user_only_when_there_is_one() {
+        assert_eq!(super::user_note("admin"), " (user: admin)");
+        assert_eq!(super::user_note(""), "");
+        assert_eq!(super::user_note("  "), "");
+    }
+
+    #[test]
+    fn a_keepass_entry_url_has_one_port() {
+        let ssh = Connection::new_ssh("s".into(), "10.0.0.5".into(), 2222);
+        assert_eq!(super::entry_url(&ssh), "ssh://10.0.0.5:2222");
+        let web = Connection::new(
+            "w".into(),
+            "https://203.0.113.10:9090".into(),
+            443,
+            ProtocolConfig::Web(WebConfig::default()),
+        );
+        assert_eq!(super::entry_url(&web), "https://203.0.113.10:9090");
     }
 }

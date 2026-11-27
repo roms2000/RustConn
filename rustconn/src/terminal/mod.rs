@@ -30,9 +30,11 @@ mod config;
 mod detach;
 pub use detach::{DetachMonitor, DetachPresentation};
 pub use output_start::ConnectionOutput;
+pub use split_title::title_session;
 mod failed_marker;
 pub mod file_drop;
 pub mod highlight_overlay;
+mod link_open;
 mod mark_registry;
 mod notebook_output;
 pub mod osc52;
@@ -60,7 +62,10 @@ mod types;
 #[cfg(test)]
 mod vte_contract_tests;
 
-pub(crate) use tab_transfer::return_transferred_tabs;
+pub(crate) use tab_transfer::{
+    accept_tab_drops, claim_tab_drop, clamp_drop_position, drag_single_tab, new_window_view,
+    return_transferred_tabs, set_drop_handler, set_new_window_handler,
+};
 
 pub(crate) use child_env::ChildCleanup;
 use child_env::{build_child_env, filter_program_is_runnable, reap_child, watch_child_exit};
@@ -81,8 +86,9 @@ use rustconn_core::models::{AutomationConfig, BackspaceSends, DeleteSends, RdpKe
 use rustconn_core::terminal_themes::TerminalTheme;
 pub use types::{
     BROADCAST_TITLE_MARKER, ClusterTabs, LOCAL_SHELL_PROTOCOL, PendingCluster, SCRIPT_TITLE_MARKER,
-    SHARED_TITLE_MARKER, SessionWidgetStorage, TerminalSession, group_still_in_use,
-    local_shell_label, regroup_title, tab_title, with_title_marker,
+    SHARED_TITLE_MARKER, SessionWidgetStorage, TerminalSession, VIEW_ONLY_TITLE_MARKER,
+    all_title_markers, group_still_in_use, leading_marker_run, local_shell_label, regroup_title,
+    tab_title, with_title_marker,
 };
 use uuid::Uuid;
 use vte4::Terminal;
@@ -277,6 +283,10 @@ pub struct TerminalNotebook {
     tab_group_manager: Rc<RefCell<TabGroupManager>>,
     /// Callback for reconnect button clicks (session_id, connection_id)
     on_reconnect: Rc<RefCell<Option<Box<dyn Fn(Uuid, Uuid)>>>>,
+    /// Callback run with the connection ID when a session's command could not
+    /// be started (missing client binary, PTY failure). Such a session has no
+    /// process, so no `child-exited` ever follows to mark it failed.
+    on_spawn_failed: Rc<RefCell<Option<Box<dyn Fn(Uuid)>>>>,
     /// Callback for the reconnect banner's cloud login button
     /// (session_id, connection_id, login command).
     on_cloud_login: CloudLoginCallback,
@@ -318,6 +328,16 @@ pub struct TerminalNotebook {
     /// connection id. Wired by the window, which owns the connection data
     /// (issue #357).
     tab_connection_menu: Rc<RefCell<Option<tab_menu::TabConnectionMenuProvider>>>,
+    /// Resolves the custom icon for the tab bar (an emoji/Unicode glyph or a
+    /// GTK icon name — see `Connection::icon`) by connection id, so a tab shows
+    /// the same mark as its sidebar row. Wired by the window, which owns the
+    /// connection data, like `tab_connection_menu`; `None` keeps the protocol
+    /// icon, which is what quick/local sessions without a saved connection get.
+    connection_icon: Rc<RefCell<Option<Rc<dyn Fn(Uuid) -> Option<String>>>>>,
+    /// Resolves a connection id to its saved name, the name **Rename Tab…**
+    /// falls back to when its entry is left empty on a connection tab. Wired by
+    /// the window, which owns the connection data, like `tab_connection_menu`.
+    tab_connection_name: Rc<RefCell<Option<tab_menu::TabConnectionNameProvider>>>,
     /// Whether keyboard passthrough is on; mirrors `win.toggle-passthrough`.
     keyboard_passthrough: Rc<std::cell::Cell<bool>>,
     /// Whether to automatically capture system shortcuts (Alt+Tab, Super)
@@ -407,6 +427,10 @@ pub struct TerminalNotebook {
     /// Told every session rename, so the split pane header follows it
     /// (issue #421); see `set_on_session_relabelled`.
     on_session_relabelled: split_title::SessionRelabelHook,
+    /// Told which displayed sessions of a split tab are View Only whenever its
+    /// title is re-derived, so the split pane headers draw the same eye the
+    /// tab title does; see `set_on_split_view_only`.
+    on_split_view_only: split_title::SplitViewOnlyHook,
     /// Told after a split tab's title source changes, so the header subtitle
     /// follows the focused pane (issue #421); see `set_on_split_title_changed`.
     on_split_title_changed: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
@@ -485,12 +509,18 @@ pub struct TerminalNotebook {
     script_recording: Rc<RefCell<Option<script_recorder::ActiveScriptRecording>>>,
     /// Sessions whose output is being shared read-only; drives the tab menu.
     shared_sessions: Rc<RefCell<HashSet<Uuid>>>,
+    /// Sessions in View Only; the tab's eye marker is derived from this set
+    /// rather than from the title text, so a rebuilt title keeps the eye.
+    view_only_sessions: Rc<RefCell<HashSet<Uuid>>>,
     /// Shared script section for terminal context menus. One live model shared
     /// by every terminal, rebuilt when recording starts or stops so the single
     /// item's label can flip between Record and Stop.
     script_menu_section: Rc<gio::Menu>,
     /// Highlight overlay widgets per session: session_id → HighlightOverlay
     highlight_overlays: Rc<RefCell<HashMap<Uuid, HighlightOverlay>>>,
+    /// The theme the quick picker last painted on a session, until a global
+    /// repaint, a reconnect or the session's end paints over it.
+    session_themes: Rc<RefCell<HashMap<Uuid, String>>>,
     /// GTK Overlay widgets per session for layering highlight DrawingArea
     terminal_overlays: Rc<RefCell<HashMap<Uuid, gtk4::Overlay>>>,
     /// Cancel tokens for background polling tasks (host check, auto-reconnect, WoL)
@@ -505,6 +535,10 @@ pub struct TerminalNotebook {
     /// so a network change or a resume from sleep honours it instead of
     /// re-running the login by itself.
     auto_reconnect_eligible: Rc<RefCell<std::collections::HashSet<Uuid>>>,
+    /// Consecutive in-place reconnects per session whose process ended
+    /// quickly (`rustconn_core::connection::next_short_lived_streak`); stops
+    /// auto-reconnect against a host that answers but keeps closing.
+    short_lived_reconnects: Rc<RefCell<HashMap<Uuid, u32>>>,
     /// SSH tunnels for jump-host connections (RDP, VNC, SPICE, Telnet).
     /// Killed automatically when the tab is closed.
     ssh_tunnels: Rc<RefCell<HashMap<Uuid, rustconn_core::ssh_tunnel::SshTunnel>>>,
@@ -624,6 +658,11 @@ impl TerminalNotebook {
         // Enable drag-and-drop for reordering tabs within the bar
         // but NOT to external targets (we handle that separately)
         tab_bar.set_extra_drag_preload(false);
+        // libadwaita moves the window instead of dragging a lone tab; give that
+        // tab a drag of its own so it can still go to another window.
+        drag_single_tab(&tab_bar, &tab_view, |page| {
+            !TabPageContainer::is_welcome(&page.child())
+        });
 
         // Create TabOverview for grid view of all tabs (GNOME Web-style)
         let tab_overview = adw::TabOverview::new();
@@ -676,6 +715,7 @@ impl TerminalNotebook {
             split_session_colors: Rc::new(RefCell::new(HashMap::new())),
             tab_group_manager: Rc::new(RefCell::new(TabGroupManager::new())),
             on_reconnect: Rc::new(RefCell::new(None)),
+            on_spawn_failed: Rc::new(RefCell::new(None)),
             on_cloud_login: Rc::new(RefCell::new(None)),
             split_pane_box_provider: Rc::new(RefCell::new(None)),
             focused_session_provider: Rc::new(RefCell::new(None)),
@@ -683,6 +723,8 @@ impl TerminalNotebook {
             on_tab_broadcast_toggle: Rc::new(RefCell::new(None)),
             tab_broadcast_membership: Rc::new(RefCell::new(None)),
             tab_connection_menu: Rc::new(RefCell::new(None)),
+            connection_icon: Rc::new(RefCell::new(None)),
+            tab_connection_name: Rc::new(RefCell::new(None)),
             keyboard_passthrough: Rc::new(std::cell::Cell::new(false)),
             auto_capture_shortcuts: Rc::new(std::cell::Cell::new(true)),
             focused_viewer: Rc::new(RefCell::new(None)),
@@ -701,6 +743,7 @@ impl TerminalNotebook {
             session_cwd: Rc::new(RefCell::new(HashMap::new())),
             split_tab_titles: Rc::new(RefCell::new(HashMap::new())),
             on_session_relabelled: Rc::new(RefCell::new(None)),
+            on_split_view_only: Rc::new(RefCell::new(None)),
             on_split_title_changed: Rc::new(RefCell::new(None)),
             pty_relays: Rc::new(RefCell::new(HashMap::new())),
             output_observers: Rc::new(RefCell::new(HashMap::new())),
@@ -715,13 +758,16 @@ impl TerminalNotebook {
             session_highlight_rules: Rc::new(RefCell::new(HashMap::new())),
             script_recording: Rc::new(RefCell::new(None)),
             shared_sessions: Rc::new(RefCell::new(HashSet::new())),
+            view_only_sessions: Rc::new(RefCell::new(HashSet::new())),
             script_menu_section: Rc::new(gio::Menu::new()),
             highlight_overlays: Rc::new(RefCell::new(HashMap::new())),
+            session_themes: Rc::new(RefCell::new(HashMap::new())),
             terminal_overlays: Rc::new(RefCell::new(HashMap::new())),
             active_recordings: Rc::new(RefCell::new(HashSet::new())),
             remote_recordings: RefCell::new(HashMap::new()),
             poll_cancel_tokens: Rc::new(RefCell::new(HashMap::new())),
             auto_reconnect_eligible: Rc::new(RefCell::new(std::collections::HashSet::new())),
+            short_lived_reconnects: Rc::new(RefCell::new(HashMap::new())),
             ssh_tunnels: Rc::new(RefCell::new(HashMap::new())),
             activity_coordinator: Rc::new(RefCell::new(None)),
             tab_containers: Rc::new(RefCell::new(HashMap::new())),
@@ -765,6 +811,7 @@ impl TerminalNotebook {
         let active_recordings = self.active_recordings.clone();
         let session_highlight_rules = self.session_highlight_rules.clone();
         let highlight_overlays = self.highlight_overlays.clone();
+        let session_themes = self.session_themes.clone();
         let terminal_overlays = self.terminal_overlays.clone();
         let ssh_tunnels = self.ssh_tunnels.clone();
         let tab_containers = self.tab_containers.clone();
@@ -773,6 +820,7 @@ impl TerminalNotebook {
         let on_session_ended = Rc::clone(&self.on_session_ended);
         let vte_child_pids = self.vte_child_pids.clone();
         let auto_reconnect_on_close = Rc::clone(&self.auto_reconnect_eligible);
+        let short_lived_on_close = Rc::clone(&self.short_lived_reconnects);
         let child_exited_on_close = Rc::clone(&self.child_exited_handlers);
         let show_welcome_on_close = self.show_welcome.clone();
         let disconnected_on_close = Rc::clone(&self.disconnected_sessions);
@@ -785,6 +833,7 @@ impl TerminalNotebook {
         let failed_markers_on_close = Rc::clone(&self.failed_markers);
         let session_cwd_on_close = Rc::clone(&self.session_cwd);
         let split_tab_titles_on_close = Rc::clone(&self.split_tab_titles);
+        let view_only_on_close = Rc::clone(&self.view_only_sessions);
         let pty_relays_on_close = Rc::clone(&self.pty_relays);
         let output_observers_on_close = Rc::clone(&self.output_observers);
         let output_filters_on_close = Rc::clone(&self.output_filters);
@@ -794,25 +843,20 @@ impl TerminalNotebook {
         let script_menu_section_on_close = Rc::clone(&self.script_menu_section);
         let split_close_on_close = self.split_close_hooks();
 
-        // Handle create-window signal - we must connect this to prevent the default
-        // behavior which causes CRITICAL warnings. Returning None cancels the tearoff.
-        // Note: libadwaita will still show a CRITICAL warning, but this is unavoidable
-        // without implementing multi-window support.
-        self.tab_view.connect_create_window(|_| {
-            // Log instead of letting libadwaita complain
-            tracing::debug!("Tab tearoff attempted but not supported - cancelling");
-            // Return None to cancel the operation
-            // The CRITICAL warning from libadwaita is unavoidable
-            None
-        });
+        // A tab dropped outside every window opens a new window, whose view the
+        // tab then lands on (see `tab_transfer`).
+        self.tab_view.connect_create_window(|_| new_window_view());
 
         // A cluster window has a tab view of its own, and libadwaita lets a tab
-        // be dragged between any two: hand back a session tab dragged out of here.
+        // be dragged between any two: hand back a session tab dragged out of
+        // here, after which the window layer moves its session where it was
+        // dropped. The Welcome placeholder is handed back too, and stays.
         let sessions_home = self.sessions.clone();
         return_transferred_tabs(&self.tab_view, move |page| {
-            sessions_home
-                .try_borrow()
-                .is_ok_and(|sessions| sessions.values().any(|p| p == page))
+            TabPageContainer::is_welcome(&page.child())
+                || sessions_home
+                    .try_borrow()
+                    .is_ok_and(|sessions| sessions.values().any(|p| p == page))
         });
 
         // Handle close-page signal
@@ -919,6 +963,8 @@ impl TerminalNotebook {
                 // map borrow: its `Drop` detaches the layer and its handlers.
                 let highlight_overlay = highlight_overlays.borrow_mut().remove(&session_id);
                 drop(highlight_overlay);
+                // The theme the quick picker painted ends with the session.
+                session_themes.borrow_mut().remove(&session_id);
 
                 // Remove terminal overlay widget for this session
                 terminal_overlays.borrow_mut().remove(&session_id);
@@ -966,6 +1012,11 @@ impl TerminalNotebook {
                 failed_markers_on_close.borrow_mut().remove(&session_id);
                 session_cwd_on_close.borrow_mut().remove(&session_id);
                 split_tab_titles_on_close.borrow_mut().remove(&session_id);
+                // The View Only state ends with the session. Every close —
+                // a tab's own button, `close_tab`, `close_session` for a split
+                // guest or a detached window — reaches this handler; a detach
+                // or a move into a split does not, so the eye survives those.
+                view_only_on_close.borrow_mut().remove(&session_id);
 
                 // A recording running against this session cannot outlive it:
                 // write the steps out rather than dropping them on the floor.
@@ -994,6 +1045,7 @@ impl TerminalNotebook {
                 output_filters_on_close.borrow_mut().remove(&session_id);
                 commit_forwarded_on_close.borrow_mut().remove(&session_id);
                 auto_reconnect_on_close.borrow_mut().remove(&session_id);
+                short_lived_on_close.borrow_mut().remove(&session_id);
                 // The widget goes with the tab, so the handlers die with it —
                 // this only keeps the map from growing for the app's lifetime.
                 child_exited_on_close

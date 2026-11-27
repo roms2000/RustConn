@@ -46,7 +46,8 @@ pub use knock::{
 };
 pub use lazy_loader::LazyGroupLoader;
 pub use login_prompt::{
-    DEFAULT_USERNAME_PROMPTS, LoginPrompt, LoginPromptMatcher, looks_like_username_prompt,
+    DEFAULT_USERNAME_PROMPTS, LoginAction, LoginPrompt, LoginPromptMatcher, LoginSequence,
+    looks_like_username_prompt,
 };
 pub use manager::{ConnectionManager, ReloadOutcome};
 pub use mdns::{apply_mdns_fallback, is_mdns_name, resolve_sandboxed_hostname};
@@ -57,7 +58,10 @@ pub use mptcp::{
 pub use port_check::{
     PortCheckError, PortCheckResult, check_port, check_port_async, check_ssh_banner,
 };
-pub use retry::{DEFAULT_BACKOFF_MULTIPLIER, RetryConfig, RetryState};
+pub use retry::{
+    DEFAULT_BACKOFF_MULTIPLIER, RetryConfig, RetryState, SHORT_LIVED_RECONNECT_SECS,
+    next_short_lived_streak,
+};
 pub use routing_memory::{Route, RouteVerdict, RoutingMemory, routing_memory_path};
 pub use spa::{SpaError, SpaResult, build_spa_packet, send_spa};
 pub use ssh_prompt::looks_like_password_prompt;

@@ -1269,6 +1269,20 @@ impl SplitViewBridge {
             .insert(session_id, (name.to_string(), protocol.to_string()));
     }
 
+    /// Draws the View Only eye in the header of each pane whose session is in
+    /// `sessions`, and clears it everywhere else.
+    ///
+    /// Called from the notebook's split title path, so a pane header and the
+    /// tab title read the same View Only state. A layout that is busy (borrowed
+    /// mutably) is skipped; the next title refresh catches up.
+    pub fn set_view_only_sessions(&self, sessions: &[Uuid]) {
+        let Ok(adapter) = self.adapter.try_borrow() else {
+            tracing::debug!("split view: layout busy, view-only headers not refreshed");
+            return;
+        };
+        adapter.set_view_only_sessions(sessions);
+    }
+
     /// Shows a session's new name in the header of the pane that holds it.
     ///
     /// The header (issue #277) is otherwise written only when a session is
@@ -2407,6 +2421,24 @@ impl SplitViewBridge {
                     return;
                 };
                 on_shell_requested(panel_uuid);
+            });
+    }
+
+    /// Sets up the callback for a tab bar tab dropped on a panel.
+    ///
+    /// Receives the pane UUID and the dragged page, like
+    /// [`Self::setup_new_shell_callback`] translates the panel.
+    pub fn setup_tab_drop_callback<F>(&self, on_tab_dropped: F)
+    where
+        F: Fn(Uuid, &adw::TabPage) + 'static,
+    {
+        let panel_uuid_map = Rc::clone(&self.panel_uuid_map);
+        self.adapter
+            .borrow()
+            .set_tab_drop_callback(move |panel_id, page| {
+                if let Some(panel_uuid) = panel_uuid_map.borrow().get(&panel_id).copied() {
+                    on_tab_dropped(panel_uuid, page);
+                }
             });
     }
 

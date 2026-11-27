@@ -295,7 +295,15 @@ impl MainWindow {
         ));
         // Write the bundled example scripts on first run, so the auto-run
         // pickers list them before the Scripts manager has ever been opened.
-        crate::dialogs::script::ensure_bundled_examples();
+        // On a thread: it reads and compares every bundled file, which the
+        // window does not wait for. shortcut: a picker opened within the first
+        // milliseconds of a first run can miss them; it lists them on reopening.
+        if let Err(e) = std::thread::Builder::new()
+            .name("seed-examples".into())
+            .spawn(crate::dialogs::script::ensure_bundled_examples)
+        {
+            tracing::warn!(%e, "Could not start the bundled example seeding");
+        }
         let activity_coordinator = Rc::new(ActivityCoordinator::new());
         let activity_for_close = activity_coordinator.clone();
         terminal_notebook.set_activity_coordinator(activity_coordinator.clone());
@@ -380,6 +388,22 @@ impl MainWindow {
                 let bridge = bridges.borrow().get(&session_id).cloned();
                 if let Some(bridge) = bridge {
                     bridge.relabel_session(session_id, name);
+                }
+            });
+        }
+
+        // The split pane headers draw the View Only eye of their own session,
+        // told from the same split title path that gives the tab title the
+        // focused session's eye. Held weakly for the same reason as above.
+        {
+            let bridges_weak = Rc::downgrade(&session_split_bridges);
+            terminal_notebook.set_on_split_view_only(move |owner, view_only| {
+                let Some(bridges) = bridges_weak.upgrade() else {
+                    return;
+                };
+                let bridge = bridges.borrow().get(&owner).cloned();
+                if let Some(bridge) = bridge {
+                    bridge.set_view_only_sessions(view_only);
                 }
             });
         }
@@ -556,6 +580,13 @@ impl MainWindow {
             });
         }
 
+        {
+            let sidebar_for_spawn_failure = sidebar.clone();
+            terminal_notebook.set_on_spawn_failed(move |connection_id| {
+                sidebar_for_spawn_failure
+                    .update_connection_status(&connection_id.to_string(), "failed");
+            });
+        }
         // Set up reconnect callback for VTE sessions
         // When user clicks "Reconnect" in a disconnected tab, reuse the
         // existing terminal tab instead of closing and creating a new one.
@@ -1248,6 +1279,37 @@ impl MainWindow {
                         return false;
                     };
                     state_ref.get_connection(connection_id).is_some()
+                });
+            // The tab bar shows the connection's custom icon (an emoji or GTK
+            // icon name from its settings) the way the sidebar row does; a
+            // connection without one keeps the protocol icon.
+            let state_weak = Rc::downgrade(&main_window.state);
+            main_window
+                .terminal_notebook
+                .set_connection_icon_provider(move |connection_id| {
+                    let state = state_weak.upgrade()?;
+                    let Ok(state_ref) = state.try_borrow() else {
+                        return None;
+                    };
+                    state_ref
+                        .get_connection(connection_id)
+                        .and_then(|connection| connection.icon.clone())
+                        .filter(|icon| !icon.trim().is_empty())
+                });
+
+            // **Rename…** on a connection tab offers the connection's own name as
+            // the reset-to-default (an empty label goes back to it).
+            let state_weak = Rc::downgrade(&main_window.state);
+            main_window
+                .terminal_notebook
+                .set_tab_connection_name_provider(move |connection_id| {
+                    let state = state_weak.upgrade()?;
+                    let Ok(state_ref) = state.try_borrow() else {
+                        return None;
+                    };
+                    state_ref
+                        .get_connection(connection_id)
+                        .map(|c| c.name.clone())
                 });
         }
 

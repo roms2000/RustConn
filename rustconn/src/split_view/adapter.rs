@@ -5,12 +5,12 @@
 //! It maintains synchronization between the data model and the widget tree.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerMotion, Label,
+    Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerMotion, Image, Label,
     Orientation, Overlay, Paned, Revealer, gdk, gio, glib,
 };
 use libadwaita as adw;
@@ -36,6 +36,9 @@ pub type SelectTabCallback = Rc<dyn Fn(PanelId, &Button)>;
 /// Close/reconnect/local-shell/pop buttons all take this shape; only the
 /// "Select Tab" button also needs the clicked widget for popover parenting.
 pub type PanelActionCallback = Rc<dyn Fn(PanelId)>;
+
+/// Callback for a tab bar tab dropped on a panel.
+pub type TabDropCallback = Rc<dyn Fn(PanelId, &adw::TabPage)>;
 
 /// CSS class marking a pane header that carries the pane's drag source.
 const DRAG_HANDLE_CSS_CLASS: &str = "split-pane-drag-handle";
@@ -91,6 +94,11 @@ pub struct SplitViewAdapter {
     /// Lets the bridge start a fresh local shell session and place it in the
     /// panel, for when there is no open tab worth moving there.
     new_shell_callback: Rc<RefCell<Option<PanelActionCallback>>>,
+    /// Callback for a tab dragged from the tab bar onto a panel.
+    ///
+    /// The drop itself is refused, so libadwaita puts the tab back home; the
+    /// callback only registers the wish (see `terminal::claim_tab_drop`).
+    tab_drop_callback: Rc<RefCell<Option<TabDropCallback>>>,
     /// Callback for close button clicks in empty panels.
     ///
     /// This allows the bridge to focus the panel and trigger the close action
@@ -148,6 +156,13 @@ pub struct SplitViewAdapter {
     /// Called with `(panel, included)` when the user ticks or unticks a
     /// panel's Broadcast check box.
     broadcast_toggled_callback: Rc<RefCell<Option<BroadcastToggledCallback>>>,
+    /// The View Only eye in each panel's header. Cleared on rebuild and
+    /// repopulated by [`Self::create_pane_header`].
+    view_only_icons: Rc<RefCell<HashMap<PanelId, Image>>>,
+    /// The sessions of this layout that are View Only, as last told by
+    /// [`Self::set_view_only_sessions`]. Kept so a header rebuilt or relabelled
+    /// after a move draws the eye of the session it now shows.
+    view_only_sessions: RefCell<HashSet<uuid::Uuid>>,
 }
 
 /// Callback for a panel's Broadcast check box: the panel and its new state.
@@ -210,6 +225,7 @@ impl std::fmt::Debug for SplitViewAdapter {
             .field("last_drop_outcome", &self.last_drop_outcome)
             .field("select_tab_callback", &"<callback>")
             .field("new_shell_callback", &"<callback>")
+            .field("tab_drop_callback", &"<callback>")
             .field("close_panel_callback", &"<callback>")
             .field("pop_panel_callback", &"<callback>")
             .field("reconnect_panel_callback", &"<callback>")
@@ -222,6 +238,8 @@ impl std::fmt::Debug for SplitViewAdapter {
             .field("broadcast_checks", &self.broadcast_checks)
             .field("syncing_broadcast_checks", &self.syncing_broadcast_checks)
             .field("broadcast_toggled_callback", &"<callback>")
+            .field("view_only_icons", &self.view_only_icons)
+            .field("view_only_sessions", &self.view_only_sessions)
             .finish()
     }
 }
@@ -244,6 +262,7 @@ impl SplitViewAdapter {
             last_drop_outcome: Rc::new(RefCell::new(None)),
             select_tab_callback: Rc::new(RefCell::new(None)),
             new_shell_callback: Rc::new(RefCell::new(None)),
+            tab_drop_callback: Rc::new(RefCell::new(None)),
             close_panel_callback: Rc::new(RefCell::new(None)),
             pop_panel_callback: Rc::new(RefCell::new(None)),
             reconnect_panel_callback: Rc::new(RefCell::new(None)),
@@ -256,6 +275,8 @@ impl SplitViewAdapter {
             broadcast_checks: Rc::new(RefCell::new(HashMap::new())),
             syncing_broadcast_checks: Rc::new(Cell::new(false)),
             broadcast_toggled_callback: Rc::new(RefCell::new(None)),
+            view_only_icons: Rc::new(RefCell::new(HashMap::new())),
+            view_only_sessions: RefCell::new(HashSet::new()),
         };
 
         adapter.rebuild_widgets();
@@ -279,6 +300,7 @@ impl SplitViewAdapter {
             last_drop_outcome: Rc::new(RefCell::new(None)),
             select_tab_callback: Rc::new(RefCell::new(None)),
             new_shell_callback: Rc::new(RefCell::new(None)),
+            tab_drop_callback: Rc::new(RefCell::new(None)),
             close_panel_callback: Rc::new(RefCell::new(None)),
             pop_panel_callback: Rc::new(RefCell::new(None)),
             reconnect_panel_callback: Rc::new(RefCell::new(None)),
@@ -291,6 +313,8 @@ impl SplitViewAdapter {
             broadcast_checks: Rc::new(RefCell::new(HashMap::new())),
             syncing_broadcast_checks: Rc::new(Cell::new(false)),
             broadcast_toggled_callback: Rc::new(RefCell::new(None)),
+            view_only_icons: Rc::new(RefCell::new(HashMap::new())),
+            view_only_sessions: RefCell::new(HashSet::new()),
         };
 
         adapter.rebuild_widgets();
@@ -376,6 +400,14 @@ impl SplitViewAdapter {
         F: Fn(PanelId) + 'static,
     {
         *self.new_shell_callback.borrow_mut() = Some(Rc::new(callback));
+    }
+
+    /// Sets a callback for a tab dragged from the tab bar onto a panel.
+    pub fn set_tab_drop_callback<F>(&self, callback: F)
+    where
+        F: Fn(PanelId, &adw::TabPage) + 'static,
+    {
+        *self.tab_drop_callback.borrow_mut() = Some(Rc::new(callback));
     }
 
     /// Sets a callback for close button clicks in empty panels.
@@ -894,6 +926,35 @@ impl SplitViewAdapter {
 
         // Add the drop target controller to the widget
         widget.add_controller(drop_target);
+
+        // A tab dragged from the tab bar carries its `AdwTabPage`. The panel
+        // takes the drag (so the compositor delivers the drop) and refuses it:
+        // libadwaita then puts the tab back, and the callback places it.
+        let tab_target = DropTarget::new(adw::TabPage::static_type(), gdk::DragAction::MOVE);
+        let model_for_tab = Rc::clone(&self.model);
+        let widget_for_tab_enter = widget.clone();
+        tab_target.connect_enter(move |_, _, _| {
+            if model_for_tab.borrow().get_panel_session(panel_id).is_none() {
+                widget_for_tab_enter.add_css_class("drop-target-highlight");
+            }
+            gdk::DragAction::MOVE
+        });
+        let widget_for_tab_leave = widget.clone();
+        tab_target.connect_leave(move |_| {
+            widget_for_tab_leave.remove_css_class("drop-target-highlight");
+        });
+        let callback = Rc::clone(&self.tab_drop_callback);
+        let widget_for_tab_drop = widget.clone();
+        tab_target.connect_drop(move |_, value, _, _| {
+            widget_for_tab_drop.remove_css_class("drop-target-highlight");
+            if let Ok(page) = value.get::<adw::TabPage>()
+                && let Some(callback) = callback.borrow().clone()
+            {
+                callback(panel_id, &page);
+            }
+            false
+        });
+        widget.add_controller(tab_target);
     }
 
     /// Removes a panel from the layout.
@@ -1003,6 +1064,24 @@ impl SplitViewAdapter {
         protocol_label.set_single_line_mode(true);
         protocol_label.set_widget_name("pane-header-protocol");
         header.append(&protocol_label);
+
+        // The View Only eye of the session in this pane: the tab title shows
+        // only the focused pane's, so each header carries its own. Appended
+        // after the two labels, which `set_panel_label` finds by position.
+        let view_only_icon = Image::from_icon_name("view-reveal-symbolic");
+        view_only_icon.set_halign(Align::End);
+        view_only_icon.set_visible(false);
+        view_only_icon.set_widget_name("pane-header-view-only");
+        let view_only_hint = i18n("Keyboard and pointer input are not sent to this session");
+        view_only_icon.set_tooltip_text(Some(&view_only_hint));
+        view_only_icon.update_property(&[
+            gtk4::accessible::Property::Label(&i18n("View Only")),
+            gtk4::accessible::Property::Description(&view_only_hint),
+        ]);
+        header.append(&view_only_icon);
+        self.view_only_icons
+            .borrow_mut()
+            .insert(panel_id, view_only_icon);
 
         // Takes this panel out of the keystroke broadcast, and back in. Hidden
         // until broadcast is switched on (`set_broadcast_controls`).
@@ -1117,6 +1196,8 @@ impl SplitViewAdapter {
                         &[name],
                     ))]);
                 }
+                // A session moved into this panel brings its own eye.
+                self.sync_view_only_icon(panel_id);
                 // Show header only if labels are globally enabled, or while
                 // it carries a broadcast check box
                 header.set_visible(self.header_wanted(panel_id));
@@ -1131,6 +1212,37 @@ impl SplitViewAdapter {
                 }
                 header.set_visible(false);
             }
+        }
+    }
+
+    /// Records which of this layout's sessions are View Only and redraws the
+    /// eye in every pane header.
+    ///
+    /// Told by the notebook whenever the tab title is re-derived, from the
+    /// same state the tab title's eye comes from, so a pane header and the tab
+    /// never disagree about a session. A pane whose header is hidden keeps the
+    /// icon hidden with it.
+    pub fn set_view_only_sessions(&self, sessions: &[uuid::Uuid]) {
+        {
+            let mut stored = self.view_only_sessions.borrow_mut();
+            stored.clear();
+            stored.extend(sessions.iter().copied());
+        }
+        let panels: Vec<PanelId> = self.view_only_icons.borrow().keys().copied().collect();
+        for panel_id in panels {
+            self.sync_view_only_icon(panel_id);
+        }
+    }
+
+    /// Shows a panel's eye when the session it holds is View Only.
+    fn sync_view_only_icon(&self, panel_id: PanelId) {
+        let on = self.get_panel_session(panel_id).is_some_and(|session| {
+            self.view_only_sessions
+                .borrow()
+                .contains(&session.as_uuid())
+        });
+        if let Some(icon) = self.view_only_icons.borrow().get(&panel_id) {
+            icon.set_visible(on);
         }
     }
 
@@ -1429,6 +1541,7 @@ impl SplitViewAdapter {
         self.panel_widgets.borrow_mut().clear();
         self.panel_headers.borrow_mut().clear();
         self.broadcast_checks.borrow_mut().clear();
+        self.view_only_icons.borrow_mut().clear();
         self.panel_reveal_containers.borrow_mut().clear();
         self.paned_widgets.clear();
 

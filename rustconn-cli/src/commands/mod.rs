@@ -1,6 +1,7 @@
 //! Command handler modules for the CLI.
 
 mod add;
+mod bulk_add;
 mod cloud_sync;
 mod cluster;
 mod codec;
@@ -10,6 +11,8 @@ mod connect;
 mod delete;
 mod duplicate;
 mod dynamic_folder;
+#[cfg(feature = "client-launch")]
+mod exec;
 mod export_import;
 mod group;
 mod history;
@@ -19,6 +22,8 @@ mod monitor;
 mod move_cmd;
 mod pin;
 mod recording;
+#[cfg(feature = "client-launch")]
+mod report;
 mod run_script;
 #[cfg(any(feature = "secret-management", feature = "keepass-verify"))]
 mod secret;
@@ -186,17 +191,28 @@ pub fn dispatch(
             browser,
             winrm_ssl,
             winrm_accept_invalid_certs,
+            kubeconfig,
+            context,
+            namespace,
+            pod,
+            container,
+            shell,
+            busybox,
+            busybox_image,
+            k8s_custom_arg,
         } => {
             // Bulk add from a file (or stdin) short-circuits the single-connection
             // flag assembly: --from-file conflicts with --name/--host at the clap
             // layer, so the other flags are irrelevant here.
             if let Some(path) = from_file {
-                return add::cmd_add_from_file(config_path, &path);
+                return bulk_add::cmd_add_from_file(config_path, &path);
             }
             // clap's `required_unless_present = "from_file"` guarantees both are
             // present on this path.
             let name = name.expect("clap requires --name unless --from-file");
-            let host = host.expect("clap requires --host unless --from-file");
+            // Absent only with --pod/--busybox, which `cmd_add` rejects for
+            // anything but a Kubernetes connection; there the pod is the target.
+            let host = host.unwrap_or_default();
             add::cmd_add(
                 config_path,
                 add::AddParams {
@@ -318,20 +334,53 @@ pub fn dispatch(
                     browser: browser.as_deref(),
                     winrm_ssl,
                     winrm_accept_invalid_certs,
+                    kubernetes: add::KubernetesArgs {
+                        kubeconfig: kubeconfig.as_deref(),
+                        context: context.as_deref(),
+                        namespace: namespace.as_deref(),
+                        pod: pod.as_deref(),
+                        container: container.as_deref(),
+                        shell: shell.as_deref(),
+                        busybox: busybox.then_some(true),
+                        busybox_image: busybox_image.as_deref(),
+                        custom_args: &k8s_custom_arg,
+                    },
                 },
             )
         }
+        #[cfg(feature = "client-launch")]
+        Commands::Report {
+            kind,
+            connections,
+            tag,
+            group,
+            format,
+        } => report::cmd_report(
+            config_path,
+            kind,
+            &connections,
+            group.as_deref(),
+            tag.as_deref(),
+            format,
+            quiet,
+        ),
         Commands::Export {
             format,
             output,
             csv_delimiter,
             csv_fields,
+            group,
+            tag,
         } => export_import::cmd_export(
             config_path,
             format,
             &output,
             csv_delimiter.as_deref(),
             csv_fields.as_deref(),
+            &export_import::ExportSelection {
+                group: group.as_deref(),
+                tag: tag.as_deref(),
+            },
         ),
         Commands::Import {
             format,
@@ -475,6 +524,15 @@ pub fn dispatch(
             browser,
             winrm_ssl,
             winrm_accept_invalid_certs,
+            kubeconfig,
+            context,
+            namespace,
+            pod,
+            container,
+            shell,
+            busybox,
+            busybox_image,
+            k8s_custom_arg,
             postpend_command,
             postpend_arg,
             postpend_enabled,
@@ -603,6 +661,17 @@ pub fn dispatch(
                 browser: browser.as_deref(),
                 winrm_ssl,
                 winrm_accept_invalid_certs,
+                kubernetes: add::KubernetesArgs {
+                    kubeconfig: kubeconfig.as_deref(),
+                    context: context.as_deref(),
+                    namespace: namespace.as_deref(),
+                    pod: pod.as_deref(),
+                    container: container.as_deref(),
+                    shell: shell.as_deref(),
+                    busybox,
+                    busybox_image: busybox_image.as_deref(),
+                    custom_args: &k8s_custom_arg,
+                },
                 postpend_command: postpend_command.as_deref(),
                 postpend_arg: &postpend_arg,
                 postpend_enabled,
@@ -634,6 +703,7 @@ pub fn dispatch(
             timeout,
             yes,
             same_password,
+            accept_new_host_keys,
         } => run_script::cmd_run_script(
             config_path,
             &run_script::RunScriptParams {
@@ -645,6 +715,11 @@ pub fn dispatch(
                 assume_yes: yes,
                 quiet,
                 same_password,
+                host_keys: if accept_new_host_keys {
+                    rustconn_core::ssh_tunnel::HopHostKeys::AcceptNew
+                } else {
+                    rustconn_core::ssh_tunnel::HopHostKeys::KnownOnly
+                },
             },
         ),
         Commands::Duplicate {

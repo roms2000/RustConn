@@ -58,6 +58,7 @@ rustconn/src/window/operations.rs
 rustconn/src/window/resume_monitor.rs
 rustconn/src/window/sorting.rs
 rustconn/src/window/templates.rs
+rustconn/src/window/theme_actions.rs
 rustconn/src/window/terminal_actions.rs
 rustconn/src/window/split_view_actions.rs
 rustconn/src/window/ui.rs
@@ -99,6 +100,7 @@ rustconn/src/dialogs/settings/terminal_tab.rs
 rustconn/src/dialogs/settings/clients_tab.rs
 rustconn/src/dialogs/settings/cloud_sync_tab.rs
 rustconn/src/dialogs/settings/secrets_tab/mod.rs
+rustconn/src/dialogs/settings/secrets_tab/proton_login.rs
 rustconn/src/dialogs/settings/secrets_tab/detection.rs
 rustconn/src/dialogs/settings/ssh_agent_tab.rs
 rustconn/src/dialogs/settings/logging_tab.rs
@@ -157,6 +159,7 @@ rustconn/src/split_view/adapter.rs
 rustconn/src/split_view/bridge.rs
 rustconn/src/terminal/mod.rs
 rustconn/src/terminal/config.rs
+rustconn/src/terminal/link_open.rs
 rustconn/src/terminal/notebook_output.rs
 rustconn/src/terminal/playback.rs
 rustconn/src/terminal/recording.rs
